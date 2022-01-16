@@ -7,8 +7,10 @@ Created on Thu Jan 13 13:46:56 2022
 """
 from functools import wraps
 from crypt import methods
+from http.client import NETWORK_AUTHENTICATION_REQUIRED
 import socket
 from turtle import title
+from unittest import result
 from flask import Flask, render_template, flash, redirect, url_for, session, logging, request
 import pymysql
 from pymysql.cursors import Cursor
@@ -69,7 +71,7 @@ app.config["MYSQL_PASSWORD"] = ""
 app.config["MYSQL_DB"] = "MSBlog"
 
 #Sözlük için cursor yaptık. Böylece sözlükte dolaşıp güzel bir şekilde db'den verileri çekebilecek.
-app.config["MYSQL_CURSORCLASS"] = "Dictcursor"
+app.config["MYSQL_CURSORCLASS"] = "DictCursor"
 
 #app.config["MYSQL_TCP_PORT"] = "3306"
 
@@ -160,7 +162,16 @@ def logout():
 @app.route("/dashboard")
 @login_required     #decorator kullanıldı.
 def dashboard():
-    return render_template("dashboard.html")
+    cursor = mysql.connection.cursor()
+    sorgu = "Select * From articles where author = %s"         #kendi username'mimizi kullanarak kendimizin oluşturduğu makaleleri çekiyoruz.
+    result = cursor.execute(sorgu, (session["username"],))      #cursor'ı execute ederek çalışır hale getirdik. İçerisindeki durumlar çalışacak.
+
+    if result > 0:
+        articles = cursor.fetchall()    #liste içinde sölzük olarak aldık.
+        return render_template("dashboard.html", articles = articles)
+        pass
+    else:
+        return render_template("dashboard.html")
 
 
 @app.route("/article/<string:id>")
@@ -177,7 +188,6 @@ def articles():
     if result > 0:          #veri tabanında makale var mı?
         articles = cursor.fetcall()         #bütün makaleleri DB'de gördü, yakaladı.
         return render_template("articles.html", articles = articles)
-        pass
     else:
         return render_template("articles.html")
     #return render_template("articles.html")
@@ -201,10 +211,94 @@ def addarticle():
 
     return render_template("addarticle.html", form = form)
 
+# Makale Silmek
+@app.route("/delete/<string:id>")
+@login_required
+def delete_article(id):
+    cursor = mysql.connection.cursor()
+    sorgu = "Select * From articles where author = %s and id = %s"
+    result = cursor.execute(sorgu,(session["username"], id))
+
+    if result > 0:
+        sorgu2 = "Delete From articles where id = %s"
+        cursor.execute(sorgu2, (id,))
+        mysql.connection.commit()
+        return redirect(url_for("dashboard"))
+    else:
+        flash("Böyle bir makale yok veya bu makaleyi silme yetkiniz yok.", "danger")
+        return redirect(url_for("index"))
+
+# Makale Düzenlemek.
+@app.route("/edit/<string:id>", methods = ["GET", "POST"])
+@login_required
+def updateArticle(id):
+    if request.method == "GET":
+        cursor = mysql.connection.cursor()
+        sorgu = "Select * From articles wher id = %s and author = %s"
+        result = cursor.execute(sorgu, (id, session["username"]))   #sorgumuzu bu kriterlere göre çalıştırdık.
+
+        if result == 0:
+            flash("Böyle bir makale yok veya bu işleme yetkiniz bulunmamaktadır.", "danger")
+            return redirect(url_for("index"))       #hata alınca ana sayfaya gönderdik.
+        else:
+            article = cursor.fetchone()     #makalenin şu anki halini aldık. Form oluşturulmalı.
+            form = articleForm()
+            form.title.data = article["title"]
+            form.content.data = article["content"]
+
+            return render_template("update.html", form = form)
+    else:
+        # Post request kısmı
+        form = articleForm(request.form)
+        new_title = form.title.data
+        new_content = form.content.data
+
+        sorgu2 = "Update articles Set title= %s, content = %s where id = %s"
+        cursor = mysql.connection.cursor()
+        cursor.execute(sorgu2, (new_title, new_content, id))
+        mysql.connection.commit()
+        flash("Makale başarı ile güncellendi.", "success")
+
+        return redirect(url_for("dashboard"))
+
+# Detay Sayfası
+@app.route("/article/<string:id>")
+def detail_aritcle(id):
+    cursor = mysql.connection.cursor()
+    sorgu = "Select * From articles where id = %s"
+    result = cursor.execute(sorgu, (id,))
+
+    if result > 0:
+        article = cursor.fetchone()
+        return render_template("article.html", article = article)
+    else:
+        return render_template("article.html")
+
+
+
 # Makale Formu oluşturmak.
 class articleForm(Form):
     title = StringField("Makale Başlığı", validators=[validators.Length(min = 5, max = 200)])
     content = TextAreaField("Makale İçeriği", validators=[validators.Length(min = 10)])
+
+# Arama URL
+@app.route("/search", methods=["GET", "POST"])
+#sadece post request olmalı. Çünkü arama yapılacak. Post edilecek.
+def search():
+    if request.method == "GET":
+        return redirect(url_for("index"))
+    else:
+        keyword = request.form.get("keyword")       #bu keyword, html sayfasından geliyor.
+        cursor = mysql.connection.cursor()
+        sorgu = "Select * From articles where title like '%" + keyword + "%' "  #keywordde ne yazıldıysa onu aramak için çalıştırılan komut.
+        result = cursor.execute(sorgu)
+
+        if result == 0:
+            flash("Arana kelimeye uygun bir makale bulunamadı.", "warning")
+            return redirect(url_for("articles"))
+        else:
+            articles = cursor.fetchall()        #hepsini aldık.
+            return render_template("articles.html", articles = articles)        #articles.html sayfasına gönderdik.
 
 if __name__ == "__main__":
     app.run(debug=True)
